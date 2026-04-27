@@ -78,8 +78,8 @@ get_config() {
   read -rp "Disk size in GB [30]: " CT_DISK
   CT_DISK="${CT_DISK:-30}"
 
-  read -rp "Storage [truenas-lvm]: " CT_STORAGE
-  CT_STORAGE="${CT_STORAGE:-truenas-lvm}"
+  read -rp "Storage [local-lvm]: " CT_STORAGE
+  CT_STORAGE="${CT_STORAGE:-local-lvm}"
 
   # Network - default DHCP
   read -rp "IP address (DHCP or x.x.x.x/xx) [dhcp]: " CT_IP
