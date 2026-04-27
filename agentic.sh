@@ -7,7 +7,7 @@
 #   - makes privileged+apparmor unconfined opt-in (keeps Docker-in-LXC possible)
 #
 #  Run on your Proxmox host:
-#    curl -fsSL https://raw.githubusercontent.com/serversathome-personal/code/main/agentic.sh -o /tmp/agentic.sh && bash /tmp/agentic.sh
+#    curl -fsSL https://raw.githubusercontent.com/dmpaolino/Claude-proxmox-lxe/refs/heads/main/agentic.sh -o /tmp/agentic.sh && bash /tmp/agentic.sh
 #
 #  GitHub: https://github.com/serversathome-personal/code
 # ============================================================================
@@ -143,6 +143,7 @@ get_template() {
 }
 
 # ── Create Container ───────────────────────────────────────────────────────
+# ── Create Container ───────────────────────────────────────────────────────
 create_container() {
   info "Creating LXC container $CT_ID..."
 
@@ -157,6 +158,12 @@ create_container() {
     net_str+=",tag=$CT_VLAN"
   fi
 
+  # Determine privilege level
+  local use_privileged=0
+  if [[ "$CT_DOCKER_LXC" =~ ^[Yy]$ ]]; then
+    use_privileged=1
+  fi
+
   # Build pct create command
   local cmd=(
     pct create "$CT_ID" "$TEMPLATE_PATH"
@@ -169,7 +176,6 @@ create_container() {
     --net0 "$net_str"
     --nameserver "$CT_DNS"
     --ostype ubuntu
-    --unprivileged 1
     --features nesting=1,keyctl=1
     --onboot 1
     --start 0
@@ -180,14 +186,33 @@ create_container() {
     cmd+=(--ssh-public-keys "$CT_SSH_KEY")
   fi
 
-  "${cmd[@]}"
-  success "Container $CT_ID created."
+  if [[ "$use_privileged" -eq 0 ]]; then
+    # Try unprivileged first
+    info "Attempting unprivileged container (more secure)..."
+    if "${cmd[@]}" --unprivileged 1 2>/dev/null; then
+      success "Container $CT_ID created (unprivileged)."
+    else
+      warn "Unprivileged creation failed (storage backend may not support user namespaces)."
+      warn "Your storage '$CT_STORAGE' likely requires privileged containers."
+      echo ""
+      read -rp "Retry as privileged container? (y/N): " retry_priv
+      if [[ "$retry_priv" =~ ^[Yy]$ ]]; then
+        use_privileged=1
+        info "Retrying as privileged container..."
+        "${cmd[@]}" --unprivileged 0 || error "Failed to create container $CT_ID even as privileged."
+        success "Container $CT_ID created (privileged — fallback)."
+      else
+        error "Cannot create unprivileged container on storage '$CT_STORAGE'. Try a different storage (e.g. local-lvm, ZFS, or directory) or allow privileged mode."
+      fi
+    fi
+  else
+    "${cmd[@]}" --unprivileged 0 || error "Failed to create container $CT_ID."
+    success "Container $CT_ID created (privileged)."
+  fi
 
-  # Docker-in-LXC compatibility (opt-in)
-  if [[ "$CT_DOCKER_LXC" =~ ^[Yy]$ ]]; then
-    warn "Docker-in-LXC mode enabled: switching to privileged container + AppArmor unconfined."
-    warn "This reduces isolation. Consider using a VM for Docker workloads."
-    pct set "$CT_ID" --unprivileged 0 >/dev/null 2>&1 || true
+  # Docker-in-LXC / privileged: disable AppArmor confinement
+  if [[ "$use_privileged" -eq 1 ]]; then
+    warn "Privileged container: adding AppArmor unconfined profile."
     echo "lxc.apparmor.profile: unconfined" >> "/etc/pve/lxc/${CT_ID}.conf"
   else
     success "Hardened default: unprivileged container, AppArmor confinement left intact."
